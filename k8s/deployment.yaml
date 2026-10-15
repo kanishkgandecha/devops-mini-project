@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: version-app
+  namespace: version-app
+  labels:
+    app: version-app
+  annotations:
+    # Recorded in `kubectl rollout history` for every revision.
+    kubernetes.io/change-cause: "Initial release v1.0.0"
+spec:
+  replicas: 4
+  # Keep the last 10 ReplicaSets so we can roll back to any of them.
+  revisionHistoryLimit: 10
+  # Mark the rollout as failed if it makes no progress for 60s.
+  progressDeadlineSeconds: 60
+  # A new pod must stay Ready for 5s before it counts as available.
+  minReadySeconds: 5
+  selector:
+    matchLabels:
+      app: version-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # at most 1 extra pod above the desired count
+      maxUnavailable: 0  # never drop below the desired count -> zero downtime
+  template:
+    metadata:
+      labels:
+        app: version-app
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: version-app
+          image: version-app:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              # Give the Service time to remove this pod's endpoint before
+              # the process receives SIGTERM.
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

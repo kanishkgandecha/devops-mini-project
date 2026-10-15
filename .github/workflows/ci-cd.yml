@@ -1,0 +1,213 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: version-app
+  KIND_CLUSTER: version-app-ci
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Build & automated tests
+  # ---------------------------------------------------------------------------
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit & integration tests (with coverage gate)
+        run: npm test
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Containerise, smoke test and publish the image
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker Build & Publish
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image metadata
+        id: meta
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "registry_image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ steps.meta.outputs.version }} \
+            --build-arg GIT_COMMIT=${{ steps.meta.outputs.sha }} \
+            --build-arg BUILD_DATE=${{ steps.meta.outputs.build_date }} \
+            -t $IMAGE_NAME:${{ steps.meta.outputs.version }} .
+
+      - name: Smoke test container
+        run: |
+          docker run -d --name smoke -p 3000:3000 $IMAGE_NAME:${{ steps.meta.outputs.version }}
+          for i in $(seq 1 15); do curl -fs localhost:3000/health && break; sleep 1; done
+          curl -fs localhost:3000/ready
+          ACTUAL="$(curl -fs localhost:3000/api/version | jq -r .version)"
+          echo "Container reports version $ACTUAL"
+          test "$ACTUAL" = "${{ steps.meta.outputs.version }}"
+          docker rm -f smoke
+
+      - name: Save image as artifact (build once, deploy the same image)
+        run: docker save $IMAGE_NAME:${{ steps.meta.outputs.version }} | gzip > image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar.gz
+          retention-days: 1
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          REMOTE=${{ steps.meta.outputs.registry_image }}
+          for TAG in ${{ steps.meta.outputs.version }} sha-${{ steps.meta.outputs.sha }} latest; do
+            docker tag $IMAGE_NAME:${{ steps.meta.outputs.version }} $REMOTE:$TAG
+            docker push $REMOTE:$TAG
+          done
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Deploy to Kubernetes with a rolling update, verify, and run a
+  # rollback drill against a deliberately faulty release.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Kubernetes (Rolling Update & Rollback)
+    needs: docker
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      KUBE_CONTEXT: kind-version-app-ci
+      VERSION: ${{ needs.docker.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Kubernetes cluster (kind)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
+
+      - name: Load release image into the cluster
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - run: |
+          gunzip -c image.tar.gz | docker load
+          kind load docker-image $IMAGE_NAME:$VERSION --name $KIND_CLUSTER
+
+      - name: Build baseline (v1.0.0) and faulty (v99.0.0) images for the drill
+        run: |
+          scripts/build-image.sh 1.0.0
+          scripts/build-image.sh 99.0.0 --broken
+
+      - name: Initial deployment (baseline v1.0.0)
+        run: |
+          scripts/deploy.sh
+          scripts/verify.sh 1.0.0
+
+      - name: Start continuous traffic probe
+        run: |
+          nohup scripts/watch-traffic.sh > traffic.log 2>&1 &
+          sleep 15
+          tail -3 traffic.log
+
+      - name: Rolling update to v${{ env.VERSION }}
+        run: scripts/update.sh "$VERSION" "CI release v$VERSION (${GITHUB_SHA::7})"
+
+      - name: Verify new version is live
+        run: scripts/verify.sh "$VERSION"
+
+      - name: Rollback drill - deploy a faulty release
+        run: |
+          if scripts/update.sh 99.0.0 "Faulty release (rollback drill)"; then
+            echo "::error::Faulty release was rolled out - readiness gate did not work"
+            exit 1
+          fi
+          echo "Faulty release was blocked and automatically rolled back."
+
+      - name: Verify the good version is still serving after rollback
+        run: scripts/verify.sh "$VERSION"
+
+      - name: Check zero downtime
+        run: |
+          sleep 3
+          pkill -f watch-traffic.sh || true
+          TOTAL=$(grep -c "ok=" traffic.log || true)
+          FAILED=$(grep -c "REQUEST FAILED" traffic.log || true)
+          FAULTY=$(grep -c "v99.0.0" traffic.log || true)
+          echo "Requests: $TOTAL, failed: $FAILED, served by faulty release: $FAULTY"
+          {
+            echo "## Deployment report"
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Released version | v$VERSION |"
+            echo "| Requests during rollouts | $TOTAL |"
+            echo "| Failed requests | $FAILED |"
+            echo "| Requests served by faulty release | $FAULTY |"
+            echo
+            echo '### Rollout history'
+            echo '```'
+            kubectl --context $KUBE_CONTEXT -n version-app rollout history deployment/version-app
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$FAILED" -eq 0 && test "$FAULTY" -eq 0
+
+      - name: Show cluster state
+        if: always()
+        run: scripts/status.sh || true
+
+      - name: Upload traffic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-log
+          path: traffic.log

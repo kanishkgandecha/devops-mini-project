@@ -1,0 +1,10 @@
+node_modules
+coverage
+tests
+k8s
+scripts
+docs
+.github
+.git
+*.md
+eslint.config.js
