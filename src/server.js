@@ -2,13 +2,22 @@
 
 const { createApp } = require('./app');
 const { loadConfig } = require('./config');
+const { inClusterRequester, readNamespace, createClusterClient } = require('./k8s');
 
 const config = loadConfig();
-const app = createApp(config);
+config.namespace = config.namespace || readNamespace();
+
+const request = inClusterRequester();
+const cluster =
+  request && config.namespace
+    ? createClusterClient({ request, namespace: config.namespace, deployment: config.deploymentName })
+    : null;
+
+const app = createApp(config, { cluster });
 
 const server = app.listen(config.port, () => {
   console.log(
-    `version-app v${config.version} listening on :${config.port} (pod=${config.hostname}, broken=${config.broken})`
+    `version-app v${config.version} listening on :${config.port} (pod=${config.hostname}, broken=${config.broken}, clusterView=${Boolean(cluster)})`
   );
 });
 

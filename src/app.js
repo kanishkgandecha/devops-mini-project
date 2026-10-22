@@ -3,7 +3,7 @@
 const express = require('express');
 const { renderPage } = require('./page');
 
-function createApp(config) {
+function createApp(config, { cluster = null } = {}) {
   const app = express();
   const startedAt = Date.now();
   const state = { requests: 0, shuttingDown: false };
@@ -26,6 +26,17 @@ function createApp(config) {
     pod: config.hostname,
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     requestsServed: state.requests,
+    runtime: {
+      node: process.version,
+      pid: process.pid,
+      platform: `${process.platform}/${process.arch}`,
+      memoryMB: Math.round(process.memoryUsage().rss / 1048576),
+      heapMB: Math.round(process.memoryUsage().heapUsed / 1048576),
+      startedAt: new Date(startedAt).toISOString(),
+      nodeName: config.nodeName,
+      podIP: config.podIP,
+      namespace: config.namespace,
+    },
   });
 
   app.get('/', (req, res) => {
@@ -37,6 +48,20 @@ function createApp(config) {
     // Service. This makes the mix of old/new pods visible during a rollout.
     res.set('Connection', 'close');
     res.json(versionInfo());
+  });
+
+  // Live view of the Deployment, ReplicaSets, pods and events, read through
+  // the Kubernetes API with a read-only ServiceAccount.
+  app.get('/api/cluster', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!cluster) {
+      return res.json({ available: false, reason: 'Not running inside Kubernetes' });
+    }
+    try {
+      return res.json({ available: true, servedBy: config.hostname, ...(await cluster.snapshot()) });
+    } catch (err) {
+      return res.json({ available: false, reason: err.message });
+    }
   });
 
   // Liveness: the process is running.

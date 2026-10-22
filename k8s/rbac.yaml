@@ -1,0 +1,34 @@
+# Read-only access so the dashboard can show the live rollout: the
+# Deployment, its ReplicaSets (revisions), pods and recent events.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: version-app
+  namespace: version-app
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: version-app-viewer
+  namespace: version-app
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: version-app-viewer
+  namespace: version-app
+subjects:
+  - kind: ServiceAccount
+    name: version-app
+    namespace: version-app
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: version-app-viewer

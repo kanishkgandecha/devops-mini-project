@@ -21,8 +21,16 @@ Keep three terminals and one browser window open:
 | Terminal C | `./scripts/open-app.sh` (leave running; it opens the browser) |
 | Browser | GitHub repo → **Actions** tab, showing the last green pipeline run |
 
-> If Docker Hub is unreachable on the college network, build with the cached base image:
-> `NODE_IMAGE=node:20-alpine ./scripts/build-image.sh 1.0.0`
+> If Docker Hub is unreachable on the college network, pull the same Node image from a mirror:
+> `export NODE_IMAGE=public.ecr.aws/docker/library/node:22-alpine` (or `mirror.gcr.io/library/node:22-alpine`),
+> then run the `build-image.sh` commands. Or build on a phone hotspot.
+
+## The dashboard
+
+Keep the browser (from `./scripts/open-app.sh`) visible throughout. It updates itself every 1–2 seconds:
+the **Rollout status** tracker and progress bars move during an update, the **Pods** grid shows old and new pods
+side by side (the faulty v3 pod appears dashed and red), the **Revisions** table gains a row per change, and
+the **Kubernetes events** panel shows scaling events and "Readiness probe failed" warnings.
 
 ## Script
 

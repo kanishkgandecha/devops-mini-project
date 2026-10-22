@@ -1,6 +1,6 @@
 {
   "name": "version-app",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Application Version Management using Kubernetes Rolling Updates and Rollback - DevOps Mini Project",
   "main": "src/server.js",
   "scripts": {
