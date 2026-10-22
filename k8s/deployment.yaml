@@ -30,6 +30,8 @@ spec:
         app: version-app
     spec:
       terminationGracePeriodSeconds: 30
+      # Read-only identity used by the dashboard (see rbac.yaml).
+      serviceAccountName: version-app
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -41,10 +43,23 @@ spec:
             - name: http
               containerPort: 3000
           env:
+            # Downward API: pod details shown on the dashboard.
             - name: HOSTNAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           readinessProbe:
             httpGet:
               path: /ready
