@@ -29,7 +29,12 @@ function loadConfig(env = process.env) {
     // the pod starts but never reports ready.
     broken: env.SIMULATE_FAILURE === 'true',
     hostname: env.HOSTNAME || os.hostname(),
+    // Pod details injected by the Kubernetes Downward API (absent locally).
+    nodeName: env.NODE_NAME || null,
+    podIP: env.POD_IP || null,
+    namespace: env.POD_NAMESPACE || null,
+    deploymentName: env.DEPLOYMENT_NAME || 'version-app',
   };
 }
 
-module.exports = { loadConfig, colorFor };
+module.exports = { loadConfig, colorFor, VERSION_COLORS };
