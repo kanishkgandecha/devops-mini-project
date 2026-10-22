@@ -166,6 +166,17 @@ jobs:
       - name: Verify new version is live
         run: scripts/verify.sh "$VERSION"
 
+      - name: Verify dashboard cluster view (read-only RBAC)
+        run: |
+          kubectl --context $KUBE_CONTEXT -n version-app auth can-i list pods \
+            --as=system:serviceaccount:version-app:version-app
+          kubectl --context $KUBE_CONTEXT -n version-app exec deploy/version-app -- node -e "
+            fetch('http://localhost:3000/api/cluster').then((r) => r.json()).then((d) => {
+              console.log(JSON.stringify({ available: d.available, reason: d.reason, phase: d.deployment && d.deployment.phase,
+                pods: d.pods && d.pods.length, revisions: d.replicaSets && d.replicaSets.length }));
+              if (!d.available) process.exit(1);
+            });"
+
       - name: Rollback drill - deploy a faulty release
         run: |
           if scripts/update.sh 99.0.0 "Faulty release (rollback drill)"; then
