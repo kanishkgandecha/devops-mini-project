@@ -67,6 +67,18 @@ describe('HTTP endpoints', () => {
     expect(res.text).toContain('test-pod');
   });
 
+  test('GET /api/version includes runtime details', async () => {
+    const res = await request(app).get('/api/version');
+    expect(res.body.runtime).toMatchObject({ node: process.version, pid: process.pid });
+    expect(res.body.runtime.memoryMB).toBeGreaterThan(0);
+  });
+
+  test('page embeds boot data without breaking out of the script tag', async () => {
+    const evil = createApp(baseConfig({ HOSTNAME: '</script><b>x' }));
+    const res = await request(evil).get('/');
+    expect(res.text).not.toContain('</script><b>x');
+  });
+
   test('unknown routes return 404', async () => {
     const res = await request(app).get('/does-not-exist');
     expect(res.status).toBe(404);
