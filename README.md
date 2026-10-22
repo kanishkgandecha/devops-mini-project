@@ -21,7 +21,7 @@ faulty release and roll back** automatically.
 |---|---|
 | Version control | Git + GitHub, `main` branch protected by the CI pipeline |
 | Application build | Node.js 22 / Express 5 service (`src/`) |
-| Automated testing | ESLint + Jest/Supertest, 13 tests, coverage gate ≥ 80 % (`tests/`) |
+| Automated testing | ESLint + Jest/Supertest, 32 tests, coverage gate ≥ 80 % (`tests/`) |
 | Containerisation | Multi-stage `Dockerfile`, non-root user, health check, version baked in as build arg |
 | CI/CD | GitHub Actions: Build & Test → Docker Build & Publish (GHCR) → Deploy to Kubernetes (`.github/workflows/ci-cd.yml`) |
 | Deployment | Kubernetes Deployment with `RollingUpdate` strategy, readiness/liveness probes, revision history (`k8s/`) |
@@ -48,10 +48,10 @@ so you can roll back to it.
 ## Project structure
 
 ```
-├── src/                  Express app (config, routes, HTML page, graceful shutdown)
+├── src/                  Express app, live dashboard, read-only Kubernetes client, graceful shutdown
 ├── tests/                Jest + Supertest tests
 ├── Dockerfile            Multi-stage image; APP_VERSION / SIMULATE_FAILURE build args
-├── k8s/                  Namespace, Deployment (RollingUpdate), NodePort Service, kustomization
+├── k8s/                  Namespace, read-only RBAC, Deployment (RollingUpdate), NodePort Service, kustomization
 ├── scripts/              Cluster setup, build, deploy, update, rollback, status, verify, traffic watcher
 ├── .github/workflows/    CI/CD pipeline
 └── docs/                 Project report content, demo guide, screenshots
@@ -61,10 +61,25 @@ so you can roll back to it.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | Web page showing the version, pod name and a live log of responses |
-| `GET /api/version` | JSON version metadata (version, colour, commit, build date, pod) |
+| `GET /` | Live dashboard (see below) |
+| `GET /api/version` | JSON version metadata (version, colour, commit, build date, pod) and runtime details (uptime, memory, node, IP) |
+| `GET /api/cluster` | Live Deployment status, ReplicaSets (revisions), pods and recent events, read through the Kubernetes API |
 | `GET /health` | Liveness probe |
 | `GET /ready` | Readiness probe; returns 503 for a faulty build or while shutting down |
+
+### Live dashboard
+
+When it runs inside Kubernetes, the page at `/` shows the whole version-management process live:
+
+- **Rollout status:** Complete, Progressing, or Failed (progress deadline exceeded), a five-step process tracker (new revision → surge pod → readiness gate → scale down old → complete) and progress bars for updated, ready and available pods.
+- **Pods:** every pod coloured by version, with Ready/Not Ready, terminating, restarts, age and IP. A faulty pod shows dashed and red.
+- **Revisions:** every ReplicaSet with revision number, version, pod count and change-cause, with the current one marked.
+- **Live traffic:** a colour strip of the last 60 responses through the Service, version split, success/failure counters, latency and which pods answered.
+- **Kubernetes events:** scaling events and readiness-probe failures as they happen.
+- **This pod:** uptime, requests, memory, node, IP, build info and live liveness/readiness checks.
+
+The cluster view uses a ServiceAccount bound to a namespaced, read-only Role (`k8s/rbac.yaml`: get/list on
+deployments, replicasets, pods and events). Outside Kubernetes (`npm start`), those panels say the cluster view is unavailable.
 
 ## Running it locally
 
